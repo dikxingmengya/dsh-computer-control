@@ -143,6 +143,166 @@ window.__ModuleLoader__.load({
 
     const HAIRLINE = '1px solid rgba(128,128,128,0.28)';
 
+    // Column widths in pixels, per language and per layout, declared once and read by
+    // everything that needs them: the labels row, the table's colgroup, and the
+    // breakpoints that decide when to switch between layouts.
+    //
+    // Counted in glyphs at the 13px this table uses, where a CJK glyph is about as wide as
+    // the font size and a Latin character about half of it. Every cell also carries a
+    // trailing gutter.
+    //
+    //   序号  `#123`                      4 x 7  = 28 + 10 =  38  -> 40
+    //   时间  `10-17 08:12:40`      10 x 7.15 + 4 x 4.3 + 3.6 = 92 + 10 = 102  -> 104
+    //         (clock only `08:12:40`        6 x 7.15 + 2 x 4.3 = 52 + 10 =  62  -> 64)
+    //   类型  a badge of three glyphs   3 x 13 + 18 + 10 =  67     -> 70
+    //   结果  `进行中` / `rehearsed`    see the language note below
+    //   耗时  `2591 ms`                    42 + 10         =  52  -> 78 (fits `1 min 40 s`)
+    //
+    // The time column is the one worth checking against a real clock face rather than a
+    // character count: only four of its fourteen characters are punctuation, and
+    // punctuation is a third the width of a digit. Counting every character at the digit
+    // width is what made it 116 and left a visible gap between the time and the kind
+    // beside it.
+    //
+    // The outcome column is the only one whose width the language decides. Chinese
+    // statuses are two or three glyphs, so 39px; the English ones are words, and the
+    // longest of them, `rehearsed`, is nine characters, so 58px. One width for both would
+    // either wrap the words or leave a third of the column empty under 完成 - and the
+    // column that width comes from is the operation one, the only one that can use it.
+    //
+    // `null` marks the operation column: it takes whatever is left, and it is the one
+    // column whose text wraps, so it is the one that should absorb a narrow panel.
+    const COLUMN_WIDTHS = {
+      zh: {
+        wide: [40, 104, 70, null, 44, 78],
+        medium: [64, 70, null, 44, 78],
+        narrow: [64, 70, null, 78],
+      },
+      en: {
+        wide: [40, 104, 70, null, 64, 78],
+        medium: [64, 70, null, 64, 78],
+        narrow: [64, 70, null, 78],
+      },
+    };
+
+    /** The part of a layout that does not flex: every column but the operation one. */
+    function fixedWidthOf(widths) {
+      return widths.reduce((sum, width) => sum + (width ?? 0), 0);
+    }
+
+    /**
+     * How wide the widest part of these strings wants to be, measured rather than estimated.
+     *
+     * A hidden probe laid out with `white-space: nowrap` reports the width a line of text
+     * would take if nothing constrained it, which is the number the layout actually needs
+     * to know. Estimating it from character counts is what produced every wrong column
+     * width in this file: punctuation is a third the width of a digit, CJK glyphs are twice
+     * a Latin character, and a summary mixes all three.
+     *
+     * The probe goes inside `host` rather than into the document body, and its font is left
+     * alone. Measuring in a font the table is not using would produce a number that looks
+     * authoritative and is wrong - and the font here is whatever the shell has chosen, not
+     * something this plugin knows.
+     *
+     * Returns undefined without a DOM, without a host, or with nothing to measure; the
+     * caller falls back to its constant, because the tests run without a document and must
+     * still render.
+     */
+    function measureTextWidths(host, texts) {
+      if (host === null || host === undefined) return undefined;
+      if (typeof document === 'undefined' || typeof document.createElement !== 'function') return undefined;
+      if (texts.length === 0) return undefined;
+      // Out of flow and invisible, but still a child of `host`, so every inherited property
+      // - font family, size, weight, letter spacing - is the one the table will use.
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;';
+      const lines = texts.map((text) => {
+        const line = document.createElement('span');
+        line.style.cssText = 'display:block;white-space:nowrap;';
+        line.textContent = text;
+        probe.appendChild(line);
+        return line;
+      });
+      host.appendChild(probe);
+      try {
+        // The one read, after every write above. Interleaving the two - set a text, read its
+        // width, set the next text - forces a synchronous layout per string, forty of them
+        // per render, which is enough to make the page visibly stutter. Batched, it is one.
+        return lines.map((line) => line.getBoundingClientRect().width);
+      } finally {
+        probe.remove();
+      }
+    }
+
+    /** The value at `fraction` through a sorted copy, for ignoring the outliers. */
+    function percentileOf(values, fraction) {
+      if (values.length === 0) return undefined;
+      const sorted = [...values].sort((a, b) => a - b);
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+    }
+
+    // The share of rows whose summary should fit on one line before the layout is considered
+    // too cramped for it. Not all of them: one unusually long summary should wrap rather than
+    // collapse the layout for every other row on the page.
+    const OPERATION_FIT = 0.8;
+    // Bounds on the measured requirement, so a session of nothing but one-word summaries
+    // cannot shrink the layout away and a single enormous one cannot widen it without limit.
+    const OPERATION_MIN = 150;
+    const OPERATION_MAX = 420;
+
+    /**
+     * How much room the operation column needs for the summaries on screen, or undefined
+     * when it cannot be measured.
+     *
+     * The answer depends on the text and on nothing else, so it is kept until the text
+     * changes. Rendering happens on every push from the bridge and on every filter change,
+     * and re-measuring identical strings each time was work that could never produce a
+     * different number.
+     */
+    let operationWidthCache = { key: undefined, value: undefined };
+    function requiredOperationWidth(host, summaries, key) {
+      if (key !== undefined && operationWidthCache.key === key) return operationWidthCache.value;
+      // A sample, not the whole list: the probe writes to the DOM once per string, and three
+      // hundred of those would cost more than the layout decision is worth.
+      const sample = summaries.slice(0, 40);
+      const measured = measureTextWidths(host, sample);
+      const typical = percentileOf(measured ?? [], OPERATION_FIT);
+      const value = typical === undefined
+        ? undefined
+        : Math.min(OPERATION_MAX, Math.max(OPERATION_MIN, Math.ceil(typical) + 12));
+      // Only a real measurement is worth keeping. `undefined` means the host was not mounted
+      // yet, and caching that would freeze the fallback for the life of the page.
+      if (value !== undefined && key !== undefined) operationWidthCache = { key, value };
+      return value;
+    }
+
+    // What the container itself takes at each layout, matching the padding it sets.
+    const PADDING = { wide: 32, medium: 24, narrow: 20 };
+    // How much room the wrapping operation column is worth before its layout is abandoned.
+    //
+    // This is the one number here that is a judgement rather than a measurement, and every
+    // other number in this file is now derived from it. It is the answer to "how narrow may
+    // the description get before the layout should change", and the description is the only
+    // thing in the table that says what actually happened - a row whose operation has folded
+    // into a column of single words has stopped being readable, and a layout that lets that
+    // happen before switching has waited too long.
+    //
+    // It was 190, which turned out to be measured against the shortest summaries rather than
+    // the usual ones: `截屏 · 窗口 DeepSeek Harness` is about 173px, so at 190 it was already
+    // wrapping while the wide layout still considered itself comfortable.
+    const OPERATION_ROOM = 250;
+    // The dead band around each breakpoint: the layout is left at one distance and re-entered
+    // at another, so neither layout's own width change can push the measurement across the
+    // line and start the page flipping. It is a gap of twice this value.
+    //
+    // Twenty was chosen when the observer read the content box, which a scrollbar appearing
+    // could change by fifteen pixels for reasons that had nothing to do with the panel being
+    // resized - the band had to cover that. The observer reads the border box now, so the
+    // only thing left to absorb is rounding, and a forty-pixel gap was something the reader
+    // could feel: the panel had to be dragged well past the point where the layout stopped
+    // fitting before it changed.
+    const DEAD_BAND = 8;
+
     /**
      * A duration, in the unit that suits its size.
      *
@@ -282,6 +442,12 @@ window.__ModuleLoader__.load({
             return undefined;
           }, []);
           const chromeRef = useRef(null);
+          // Where the breakpoints live, so the observer below can read them without
+          // re-subscribing. The arithmetic that produces them sits beside the column widths
+          // further down this render, because that is what it is derived from; the ref is
+          // how a value computed there reaches an effect declared here. The initial value
+          // only covers the first paint, before that arithmetic has run once.
+          const thresholds = useRef({ toMedium: 480, toWide: 600, band: DEAD_BAND });
           useEffect(() => {
             const element = containerRef.current;
             if (element === null || element === undefined || typeof ResizeObserver !== 'function') return undefined;
@@ -297,27 +463,18 @@ window.__ModuleLoader__.load({
               // the room it needs pushes the measurement back under the threshold, and the
               // page flips between the two for as long as it is left there.
               //
-              // The boundaries are derived from what the columns actually measure, not
-              // chosen for roundness:
-              //   wide   six columns need about 600px with padding (the date column alone
-              //          is ~105, and it is the widest single cell in the table)
-              //   medium five columns need about 450px once the date is gone
-              // A wide band stops the flicker but creates a dead zone the reader can feel:
-              // leave wide below 580 and needing 660 to come back means putting the panel
-              // exactly where it was does not restore what was there. Twenty pixels still
-              // absorbs measurement jitter and is small enough not to be noticed.
+              // The boundaries are not chosen here. They are computed from the widths the
+              // columns actually declare - the fixed columns plus the padding plus the room
+              // the wrapping operation column needs - and handed in through a ref, because
+              // that arithmetic lives beside the widths themselves.
               //
-              // What caused the original flicker is fixed elsewhere anyway: the observer
-              // reads the border box, which a scrollbar cannot change.
+              // This replaced a pair of hand-picked numbers, and the hand-picked pair was
+              // wrong every time a column changed: shrinking the outcome column made the
+              // wide layout fit in less space, so the switch happened later than it should
+              // have, and the number that said when to switch had to be re-guessed by hand
+              // each round. A threshold derived from the layout cannot fall behind it.
               setLayout((current) => {
-                // Measured, then nudged by eye. The five fixed columns come to about 360px
-                // with padding and the wrapping operation column wants some 120 more, so the
-                // arithmetic minimum for six columns is near 500 - but a table squeezed to
-                // its arithmetic minimum looks squeezed, so the switch happens a little
-                // before then rather than at the last possible pixel.
-                const toMedium = 430;
-                const toWide = 555;
-                const band = 20;
+                const { toMedium, toWide, band } = thresholds.current;
                 if (current === 'wide') {
                   if (width >= toWide - band) return 'wide';
                   return width < toMedium - band ? 'narrow' : 'medium';
@@ -339,6 +496,12 @@ window.__ModuleLoader__.load({
           // locale change is all that is needed for the page to follow the shell.
           const [, setLocaleRevision] = useState(0);
           useEffect(() => ctx.locale.subscribe(() => setLocaleRevision((revision) => revision + 1)), []);
+
+          // The active language. It decides two things: which dictionary `t` reads, and
+          // which column-width table applies - the outcome column is the one whose width
+          // the language decides, and COLUMN_WIDTHS holds both. The re-render above is what
+          // makes switching language take effect.
+          const localeId = ctx.locale.getLocale().active.toLowerCase();
 
           const load = useCallback(async (silent) => {
             if (sessionId === undefined) {
@@ -555,26 +718,55 @@ window.__ModuleLoader__.load({
           //   时间  `10-17 08:12:40`        14 x 7.4 = 104 + 10 = 114  -> 116
           //         (clock only `08:12:40`   8 x 7.4 =  59 + 10 =  69  -> 72)
           //   类型  a badge of three glyphs  3 x 13 + 18 pill + 10 = 67 -> 70
-          //   结果  `进行中`, the longest     3 x 13 = 39 + 10 =  49  -> 52
+          //   结果  see the gutter note below
           //   耗时  `2591 ms`            4 x 7 + 2 x 7 = 42 + 10 =  52  -> 58
           //
-          // 52 is the floor for the outcome column and not a preference: the three-glyph
-          // statuses are the longest this column ever holds, and below about 50 they wrap.
-          // Widths larger than these are not slack, they are width taken from the operation
-          // column - the only one that can use it.
-          const WIDTHS_BY_LAYOUT = {
-            wide: [40, 116, 70, null, 52, 78],
-            medium: [72, 70, null, 52, 78],
-            narrow: [72, 70, null, 78],
+          // The outcome column is the one that reads as too wide in Chinese and is not: its
+          // width is set by the English words, because `refused` and `running` are seven
+          // characters where `完成` is two glyphs, and one width has to hold both.
+          //
+          // What can be given back is the gutter. Every cell carries 10px of right padding
+          // to separate it from the next column, and for most columns that is the whole gap
+          // needed. Here it is not a gap but empty space, because the values are short and
+          // the column after it is right-aligned away from it. Trimming this one cell's
+          // gutter to 4px and the column by the same 6px leaves the room the text actually
+          // has unchanged - same content width, six fewer pixels of nothing.
+          const GUTTER = 10;
+          const OUTCOME_GUTTER = 4;
+          const widthsByLanguage = COLUMN_WIDTHS[localeId.startsWith('zh') ? 'zh' : 'en'];
+          const WIDTHS_BY_LAYOUT = widthsByLanguage;
+          // The breakpoints, computed from those widths rather than picked: the fixed
+          // columns, plus the container's own padding, plus the room the wrapping operation
+          // column is worth keeping. Change a column and the switch point moves with it.
+          //
+          // What the operation column needs is measured from the summaries actually on
+          // screen rather than taken from a constant, so the switch follows the content
+          // instead of a guess about it. The measurement never reads the current layout -
+          // it asks how wide the text wants to be at all - which is what keeps this
+          // declarative: one panel width and one set of rows give exactly one layout, and
+          // there is no arrangement for the page to oscillate between.
+          // The key is what the measurement depends on: which summaries, and in which language.
+          // Anything else changing - a push that added no rows, a filter toggle back to the
+          // same set, the counter's own ticks - cannot change the answer.
+          const operationKey = `${rows.length}|${rows[0]?.index ?? ''}|${rows[rows.length - 1]?.index ?? ''}|${localeId}`;
+          const requiredOperation = requiredOperationWidth(containerRef.current, rows.map((entry) => entry.summary), operationKey) ?? OPERATION_ROOM;
+          thresholds.current = {
+            toWide: fixedWidthOf(widthsByLanguage.wide) + PADDING.wide + requiredOperation,
+            toMedium: fixedWidthOf(widthsByLanguage.medium) + PADDING.medium + requiredOperation,
+            band: DEAD_BAND,
           };
           const names = COLUMNS_BY_LAYOUT[layout];
           const widths = WIDTHS_BY_LAYOUT[layout];
           const columns = names.map((name) => t(name));
-          // The numbers the table and the labels row must both obey. A cell carries 10px of
-          // trailing padding, so the border-box width is what has to line up, not the text.
+          // The numbers the table and the labels row must both obey. A cell carries a
+          // trailing gutter, so the border-box width is what has to line up, not the text -
+          // and the outcome column's narrower gutter has to be applied in both places or
+          // its label drifts left of the values beneath it.
+          const outcomeIndex = names.indexOf('columnOutcome');
+          const gutterFor = (index) => (index === outcomeIndex ? OUTCOME_GUTTER : GUTTER);
           const labelStyle = (index) => ({
             boxSizing: 'border-box',
-            padding: '8px 10px 6px 0',
+            padding: `8px ${gutterFor(index)}px 6px 0`,
             textAlign: index === widths.length - 1 ? 'right' : 'left',
             whiteSpace: 'nowrap',
             ...(widths[index] === null || widths[index] === undefined
@@ -833,6 +1025,9 @@ window.__ModuleLoader__.load({
                     key: 'o',
                     style: {
                       ...cell, ...toneStyle(OUTCOME_TONE[entry.outcome]),
+                      // The same narrower gutter the label above uses, so the values and the
+                      // label they sit under start and end on the same pixels.
+                      paddingRight: OUTCOME_GUTTER,
                       // A refusal carries its whole reason, which can be a sentence. Without
                       // wrapping, that one row decides the width of the column and pushes the
                       // whole table past the panel - which is what made the layout give up
