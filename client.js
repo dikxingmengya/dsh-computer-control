@@ -45,7 +45,7 @@ window.__ModuleLoader__.load({
       columnOperation: '操作',
       columnOutcome: '结果',
       columnTook: '耗时',
-      milliseconds: '{ms} 毫秒',
+      milliseconds: '{ms} ms',
       kindCapture: '截屏',
       kindScreen: '读屏',
       kindWindows: '窗口',
@@ -142,6 +142,32 @@ window.__ModuleLoader__.load({
     };
 
     const HAIRLINE = '1px solid rgba(128,128,128,0.28)';
+
+    /**
+     * A duration, in the unit that suits its size.
+     *
+     * Past 20000 ms the unit changes, past 60 s it gains minutes, past 60 min it gains
+     * hours. The first threshold was 100000 ms, which made the seconds form unreachable:
+     * 100000 ms is already 100 seconds, so the smallest value that could leave
+     * milliseconds was `1 min 40 s`. At 20000 ms the three forms are all reachable -
+     * `19999 ms`, `20 s`, `1 min 40 s`, `1 h 39 min` - and five-digit millisecond counts,
+     * which are the ones that are hard to read at a glance, stop at twenty seconds.
+     *
+     * The units are not translated: `ms`, `s`, `min` and `h` read the same in both
+     * languages this page speaks, and the Chinese words for them cost about 12px each in a
+     * column that would rather give the room to the operation being described.
+     */
+    function durationOf(ms) {
+      const value = Math.max(0, Math.round(ms));
+      if (value < 20000) return `${value} ms`;
+      const totalSeconds = Math.round(value / 1000);
+      if (totalSeconds < 60) return `${totalSeconds} s`;
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds - minutes * 60;
+      if (minutes < 60) return `${minutes} min ${seconds} s`;
+      const hours = Math.floor(minutes / 60);
+      return `${hours} h ${minutes - hours * 60} min`;
+    }
 
     function clockOf(iso) {
       const date = new Date(iso);
@@ -255,21 +281,7 @@ window.__ModuleLoader__.load({
             }
             return undefined;
           }, []);
-          // How tall the sticky chrome is, so the column header can stick directly
-          // beneath it instead of underneath it, out of sight.
           const chromeRef = useRef(null);
-          const [chromeHeight, setChromeHeight] = useState(0);
-          useEffect(() => {
-            const element = chromeRef.current;
-            if (element === null || element === undefined || typeof ResizeObserver !== 'function') return undefined;
-            const observer = new ResizeObserver((entries) => {
-              const box = entries[0]?.borderBoxSize?.[0];
-              const height = box?.blockSize ?? entries[0]?.contentRect?.height ?? 0;
-              setChromeHeight(Math.round(height));
-            });
-            observer.observe(element);
-            return () => observer.disconnect();
-          }, []);
           useEffect(() => {
             const element = containerRef.current;
             if (element === null || element === undefined || typeof ResizeObserver !== 'function') return undefined;
@@ -438,19 +450,6 @@ window.__ModuleLoader__.load({
           // The row separator lives on the cells, not on the row: the table is laid out
           // with `border-collapse: separate`, where a <tr> border is not painted at all.
           const cell = { padding: '6px 10px 6px 0', verticalAlign: 'top', whiteSpace: 'nowrap', borderBottom: HAIRLINE };
-          // The column header pins directly beneath the chrome, which is itself sticky and
-          // opaque. The offset it needs is the chrome's measured height, and a wrong offset
-          // now fails safely: the chrome sits above it in the stacking order and paints over
-          // it, so a mistake hides the header instead of drawing it across a row. That is
-          // the difference between the two arrangements, and the reason this one is worth
-          // another attempt.
-          const headerCell = {
-            ...cell, fontWeight: 500,
-            position: 'sticky', top: chromeHeight, zIndex: 1,
-            // Fully opaque, and muted through the colour rather than through opacity.
-            background: surface ?? 'rgb(255, 255, 255)',
-            ...(mutedText === undefined ? {} : { color: mutedText }),
-          };
 
           // One control vocabulary for the whole page: same height, same radius, same
           // hairline. A control that holds state (the selected filter, the live switch)
@@ -517,7 +516,7 @@ window.__ModuleLoader__.load({
           const elapsedRef = useRef(null);
           const runningEntry = snapshot.entries.find((entry) => entry.outcome === 'running');
           const runningStart = runningEntry === undefined ? undefined : Date.parse(runningEntry.at);
-          const formatElapsed = (ms) => (narrow ? `${ms} ms` : t('milliseconds', { ms }));
+          const formatElapsed = (ms) => durationOf(ms);
           useEffect(() => {
             if (runningStart === undefined || Number.isNaN(runningStart)) return undefined;
             const write = () => {
@@ -540,7 +539,49 @@ window.__ModuleLoader__.load({
             medium: ['columnTime', 'columnKind', 'columnOperation', 'columnOutcome', 'columnTook'],
             narrow: ['columnTime', 'columnKind', 'columnOperation', 'columnTook'],
           };
-          const columns = COLUMNS_BY_LAYOUT[layout].map((name) => t(name));
+          // Column widths in pixels, declared once and used twice: the labels are drawn as a
+          // plain flex row inside the pinned block, and the table below is laid out with
+          // `table-layout: fixed` against the same numbers. That is what lets the two agree
+          // without the labels having to live inside a <thead>, which is the only way they
+          // can be part of the same pinned element as the title and the filters.
+          //
+          // `null` marks the operation column: it takes whatever is left, and it is the one
+          // column whose text wraps, so it is the one that should absorb a narrow panel.
+          // Counted in glyphs rather than estimated, at the 13px this table uses, where a
+          // CJK glyph is about as wide as the font size and a digit is about 0.55 of it.
+          // Every cell also carries 10px of trailing padding.
+          //
+          //   序号  `#123`                     4 x 7  = 28 + 10 =  38  -> 40
+          //   时间  `10-17 08:12:40`        14 x 7.4 = 104 + 10 = 114  -> 116
+          //         (clock only `08:12:40`   8 x 7.4 =  59 + 10 =  69  -> 72)
+          //   类型  a badge of three glyphs  3 x 13 + 18 pill + 10 = 67 -> 70
+          //   结果  `进行中`, the longest     3 x 13 = 39 + 10 =  49  -> 52
+          //   耗时  `2591 ms`            4 x 7 + 2 x 7 = 42 + 10 =  52  -> 58
+          //
+          // 52 is the floor for the outcome column and not a preference: the three-glyph
+          // statuses are the longest this column ever holds, and below about 50 they wrap.
+          // Widths larger than these are not slack, they are width taken from the operation
+          // column - the only one that can use it.
+          const WIDTHS_BY_LAYOUT = {
+            wide: [40, 116, 70, null, 52, 78],
+            medium: [72, 70, null, 52, 78],
+            narrow: [72, 70, null, 78],
+          };
+          const names = COLUMNS_BY_LAYOUT[layout];
+          const widths = WIDTHS_BY_LAYOUT[layout];
+          const columns = names.map((name) => t(name));
+          // The numbers the table and the labels row must both obey. A cell carries 10px of
+          // trailing padding, so the border-box width is what has to line up, not the text.
+          const labelStyle = (index) => ({
+            boxSizing: 'border-box',
+            padding: '8px 10px 6px 0',
+            textAlign: index === widths.length - 1 ? 'right' : 'left',
+            whiteSpace: 'nowrap',
+            ...(widths[index] === null || widths[index] === undefined
+              ? { flex: 1, minWidth: 0 }
+              : { width: widths[index], flex: '0 0 auto' }),
+            ...(mutedText === undefined ? {} : { color: mutedText }),
+          });
 
           // The right column is a second seat for the same page. `openTab` names the
           // page by kind, and the type registered below supplies its body; nothing
@@ -555,33 +596,52 @@ window.__ModuleLoader__.load({
               style: control(),
             }, t('openInSidebar'));
 
-          // Plain flow, no height, no flex, no overflow.
+          // The two seats scroll differently, so they get different containers. This is not
+          // a preference, it is what each seat does with the page:
           //
-          // The page used to be a flex column with the list scrolling inside it. That works
-          // in the right panel, where the seat hands the view a definite height, and does
-          // not work in the main column, where it does not: the list was then stretched by
-          // its own content and never scrolled, while still declaring `overflow: auto`. An
-          // overflow ancestor that never scrolls is the nearest scrollport for everything
-          // inside it, so `position: sticky` on the column header had a box that never
-          // moves to stick to - which is exactly why the header stayed put in one seat and
-          // scrolled away in the other.
+          //   the right panel hands the view a definite height and does not scroll itself,
+          //   so the page has to scroll inside it - and its sticky elements then stick to
+          //   that inner box, which is the box that actually moves.
           //
-          // Letting the host's own scroller do the scrolling removes the question: there is
-          // no overflow of this page's anywhere, so the sticky elements stick to whatever
-          // the host scrolls, in either seat, by the same mechanism.
-          return h('div', { ref: containerRef, style: { padding: narrow ? '0 10px' : (roomy ? '0 16px' : '0 12px'), color: 'inherit', font: 'inherit', boxSizing: 'border-box' } }, [
+          //   the main column scrolls at the host level and hands down no height, so the
+          //   page stays in plain flow and its sticky elements stick to the host's
+          //   scroller. An overflow here would trap them against a box that never moves,
+          //   which is what stopped the column header pinning in that seat.
+          //
+          // One arrangement cannot serve both: plain flow leaves the right panel with
+          // nothing to scroll, and an inner scroller leaves the main column with a
+          // scrollport that never scrolls.
+          const seat = inSidebar === true
+            ? { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' }
+            : { boxSizing: 'border-box' };
+          const scrollBox = inSidebar === true
+            ? { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', margin: '0 -4px', padding: '0 4px 25px' }
+            : { padding: '0 4px 25px' };
+
+          return h('div', {
+            ref: containerRef,
+            style: {
+              ...seat,
+              padding: narrow ? '0 10px' : (roomy ? '0 16px' : '0 12px'),
+              color: 'inherit', font: 'inherit',
+            },
+          }, [
             // The spinner's keyframes, rendered as an element rather than injected into the
             // document head, so unmounting this view takes them away with everything else
             // the page put on screen.
             h('style', { key: 'spin', children: '@keyframes dshcc-spin { to { transform: rotate(360deg); } }' }),
-            // The title, the controls and the filters pin to the top of whatever the host
-            // scrolls. Its background is the surface read from the DOM rather than a wash,
-            // so rows cannot show through it and no blur is needed to hide them.
+            // The title, the controls and the filters pin to the top. This is the only
+            // sticky element on the page, and that is the point: with nothing else pinned,
+            // no element has to know how tall another one is, so there is no offset that
+            // can be measured wrong and no pair that can be drawn on top of each other.
+            //
+            // Its background is the surface read from the DOM, so it is opaque and rows
+            // pass beneath it unseen rather than showing through.
             h('div', {
               key: 'chrome',
               ref: chromeRef,
               style: {
-                position: 'sticky', top: 0, zIndex: 2,
+                position: 'sticky', top: 0, zIndex: 1,
                 paddingTop: narrow ? 12 : 18,
                 paddingBottom: 10,
                 background: surface ?? 'rgb(255, 255, 255)',
@@ -683,22 +743,48 @@ window.__ModuleLoader__.load({
                 }, t('clearFilter')),
               ])
               : null,
+
+              // The column labels, inside the pinned block and below the filters. They are
+              // here rather than in a <thead> because a table header cannot be part of the
+              // same element as the title: two pinned elements would need an offset to keep
+              // them apart, and an offset is what drew labels across the rows before. One
+              // pinned element cannot collide with itself.
+              //
+              // `role` is set so the arrangement is still announced as a table header to
+              // anything that reads the page rather than looks at it.
+              snapshot.status === 'ready' && rows.length > 0
+                ? h('div', {
+                  key: 'labels',
+                  role: 'row',
+                  style: {
+                    display: 'flex', alignItems: 'flex-end', fontSize: 12,
+                    borderBottom: HAIRLINE, marginBottom: 2,
+                  },
+                }, columns.map((label, index) => h('div', {
+                  key: names[index], role: 'columnheader', style: { ...labelStyle(index), fontWeight: 500 },
+                }, label)))
+                : null,
             ]),
 
-            // No overflow, no flex, no minimum height: this is a plain block, and the
-            // scrolling above it belongs to the host. Declaring `overflow` here while
-            // having no height of its own is what made the column header stick to a box
-            // that never moved.
+            // This box scrolls only in the right panel, where nothing above it does. See
+            // `scrollBox` near the top of this render for why the two seats differ.
             h('div', {
               key: 'list',
               ref: listRef,
-              style: { padding: '0 4px 25px' },
+              style: scrollBox,
             }, [
               snapshot.status === 'ready' && rows.length > 0
-                ? h('table', { key: 'table', style: { borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, width: '100%' } }, [
-                  h('thead', { key: 'h' }, h('tr', null, columns.map((label, index) => h('th', {
-                    key: label, style: { ...headerCell, textAlign: index === columns.length - 1 ? 'right' : 'left' },
-                  }, label)))),
+                ? h('table', {
+                  key: 'table',
+                  // Fixed layout, driven by the widths declared above, so these columns land
+                  // exactly where the labels row put them. Without it the browser would size
+                  // columns from their content and the pinned labels would drift away from
+                  // the data they name.
+                  style: { tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, width: '100%' },
+                }, [
+                  h('colgroup', { key: 'cols' }, widths.map((w, index) => h('col', {
+                    key: names[index], style: w === null || w === undefined ? {} : { width: w },
+                  }))),
                 h('tbody', { key: 'b' }, rows.map((entry) => h('tr', { key: entry.index }, [
                   roomy ? h('td', { key: 'i', style: { ...cell, opacity: 0.6 } }, `#${entry.index}`) : null,
                   // The date is the first thing to go: only the wide layout has room for it,
@@ -774,7 +860,9 @@ window.__ModuleLoader__.load({
                     // from then on the timer above owns the text.
                     ? h('span', { key: 'live', ref: elapsedRef },
                       formatElapsed(Math.max(0, Math.round(Date.now() - Date.parse(entry.at)))))
-                    : (narrow ? `${entry.elapsedMs} ms` : t('milliseconds', { ms: entry.elapsedMs }))),
+                    // One unit for both layouts now that the unit is `ms`: the Chinese word
+                    // it replaced cost about 12px in a column that holds nothing else.
+                    : durationOf(entry.elapsedMs)),
                 ].filter((node) => node !== null)))),
                 ])
                 : null,
