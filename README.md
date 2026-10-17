@@ -1,4 +1,4 @@
-# @local/dsh-computer-control
+﻿# @local/dsh-computer-control
 
 让 DeepSeek Harness 直接操作本机 Windows 桌面：截屏、找图找色、OCR 取字定位、
 鼠标、键盘、窗口、剪贴板、启动应用、条件等待、录制回放、系统操作。
@@ -6,6 +6,121 @@
 插件在 Host 进程内运行，把全部原生能力交给**一个常驻 PowerShell 助手进程**执行；
 助手启动时用 `Add-Type` 把 C# P/Invoke 层编译一次（约 160 ms，并缓存成 DLL 复用），
 之后每个操作通过 stdin/stdout 上的 NDJSON 协议往返，鼠标键盘操作 5–20 ms。
+
+---
+
+## 0. 拿到这个插件的人，从这里开始
+
+### 它需要什么
+
+| | |
+|---|---|
+| **Windows 10 2004 或更高** | 插件通过 user32/gdi32 驱动 Windows 桌面，**在 macOS 和 Linux 上无法工作**（`package.json` 里的 `os` 字段会让它们在安装时就失败，而不是装完默默不响应） |
+| **Windows PowerShell 5.1** | Win10/11 自带。助手依次尝试 `DSH_COMPUTER_CONTROL_PWSH` 环境变量、`pwsh`、最后才是它 |
+| **.NET Framework 的 C# 编译器** | 系统自带，由 `Add-Type` 在首次使用时调用 |
+| **零 Node 依赖** | 不需要 pnpm 装任何东西——这是刻意的设计，见第 1 节 |
+
+### 安装
+
+**先说清楚一件事：我（作者）没有验证过 DSH 的插件安装器是否接受 Git 形式的 spec。**
+它底层调用 pnpm，而 pnpm 支持 `github:用户/仓库`，但"底层支持"和"确实传下去了"是两件事。
+
+所以有两条路，**第二条我一定验证过，因为本机就是这么装的**：
+
+**A. 走 DSH 的插件管理器**，spec 填：
+
+```
+github:dikxingmengya/dsh-computer-control
+```
+
+装完按提示重启 DSH。**如果这一步失败，用 B。**
+
+**B. 手动挂载**（可靠，但需要动 profile 目录）：
+
+1. `git clone https://github.com/dikxingmengya/dsh-computer-control.git` 到任意位置
+2. 在 profile 目录（`~/.dsh/profiles/<你的 profile>/`）的 `package.json` 里加一条依赖：
+   `"@local/dsh-computer-control": "link:<你 clone 的绝对路径>"`
+3. 在该目录执行 `pnpm install`
+4. 在 `cordis.patch.yml` 里插入一行：
+
+   ```yaml
+   - id: computer-control
+     name: '@local/dsh-computer-control'
+     disabled: false
+   ```
+
+5. 重启 DSH
+
+### 装完先自检，再谈别的
+
+```bash
+node selftest.js        # 或在插件目录下 pnpm selftest
+```
+
+它逐项报告**这台机器**能不能跑，而不是只给一个成败：
+
+```
+PASS  running on Windows
+PASS  the package carries native/agent.ps1          ← 6 个关键文件都在
+PASS  the native helper starts and answers          took 2170 ms
+PASS  the desktop is measured in physical pixels    dpiMode=per-monitor-v2 2560x1600 scale=1.5
+PASS  a capture can be taken and written            64x64, 5816 bytes
+PASS  the on-screen indicator can be created        theme=light
+11 of 11 checks passed
+```
+
+**失败的那一项会说明缺什么。** "the native helper starts and answers" 这一步同时检验了
+PowerShell 和 C# 编译器——它们是仅有的两个外部依赖，失败在这里比插件默默不工作好得多。
+
+### 然后怎么用
+
+**不需要任何配置。** 装好之后，这个 profile 下的**每一个对话**都能看到这些工具——
+它们是全局注册的，不是绑在某个会话上。
+
+直接说人话就行：
+
+> 截个屏看看现在屏幕上是什么
+> 打开记事本，输入"你好"，然后保存到桌面
+> 屏幕上那个蓝色的按钮在哪？点它
+> 帮我把这个窗口里的表格内容读出来
+
+模型会自己选择合适的工具。它会先调 `screen_info` 确定屏幕布局和 DPI，再动手——
+这是提示词里注入的约定，不需要你交代。
+
+### 它默认不会做的事
+
+| 默认值 | 含义 |
+|---|---|
+| `dryRun: false` | **真的会动鼠标键盘**，不是演练 |
+| `allowRisky: false` | **关窗口、杀进程、锁屏、睡眠、息屏一律被拒**，要显式开启才生效 |
+| `liveBridge: off` | **不开任何端口**。界面上的"自动更新"按钮就是开关，开启后只绑定 `127.0.0.1` |
+
+**这个插件能读你的屏幕、动你的鼠标键盘。** 这不是免责声明，是它的功能本身。
+在一个你不介意被操作的机器上使用它。
+
+### 出问题时
+
+1. **先跑 `node selftest.js`**——它能区分"装错了"和"这台机器缺东西"
+2. 打开**操作记录**页（对话 | 轨迹 | 操作记录），看每一次工具调用的参数、结果、耗时，
+   以及被拒绝的操作和被拒的原因
+3. 第 15 节有更细的排错条目
+
+### 浏览器：两套工具，能力不同
+
+插件对浏览器有**两条独立的路**，用哪条取决于你要操作的是哪个浏览器：
+
+| | **桌面工具（A）** | **浏览器工具（B）** |
+|---|---|---|
+| 操作对象 | **任何已经开着的窗口**，包括你已登录的浏览器 | **它自己启动的那个浏览器** |
+| 能力 | 移动、点击、打字、截图、OCR 认字 | **读 DOM**、按无障碍名称点元素、填表单、执行 JS、等 Promise |
+| 登录态 | **沿用你现在的** | **没有**——独立配置目录，空的 |
+| 需要重启浏览器 | 不需要 | 需要（由工具启动） |
+
+**最关键的一句：B 驱动不了你正在用的那个浏览器。**
+
+这不是实现取舍，是 Chromium 的限制：从 **M136 起，在默认配置目录下 `--remote-debugging-port` 会被静默忽略**（防止恶意软件接管已登录的浏览器）。所以 `browser_launch` 必须带一个独立的 `--user-data-dir`——于是它启动的是一个**没有你任何登录态、书签、扩展**的干净浏览器。
+
+**要操作已登录的页面，用 A。** `window_control` 聚焦窗口、`keyboard_control` 填地址栏、`screen_capture` + `ocr_screen` 读页面——慢一些、靠坐标，但它碰的是你真正在用的那个浏览器。
 
 ---
 
@@ -21,7 +136,7 @@
 | 工具返回值里报告按键实际送达的窗口 | 键盘只发给前台窗口，调用方一眼就能发现「打错窗口了」 |
 | 屏幕提示用**对截屏 API 隐形**的分层窗口 | 提示框绝不能出现在截图里，否则模型会看到自己的提示框 |
 
-## 2. 工具一览（15 个）
+## 2. 工具一览（15 个桌面工具 + 4 个浏览器工具）
 
 | 工具 | 作用 |
 |---|---|
@@ -40,6 +155,19 @@
 | `input_record` | `start` `stop` `status` `replay`：全局钩子录制真实鼠标键盘操作，带时间戳回放 |
 | `system_control` | `volume-up/down` `mute` `show-desktop` `lock` `monitor-off` `screensaver` `sleep` |
 | `computer_activity` | 查看本次会话的操作列表（截屏与读屏同样计入），支持 `kind`/`since` 过滤、磁盘历史与清空 |
+
+### 浏览器工具（B）
+
+| 工具 | 作用 |
+|---|---|
+| `browser_launch` | 带调试端口启动一个浏览器（**独立配置目录，无登录态**）；**先检查端口**，已经在跑就报告而不是假装启动 |
+| `browser_tabs` | 列出调试目标（页面、Service Worker、Worker），带 id 与索引 |
+| `browser_read` | **读页面的可交互元素**：角色、无障碍名称、CSS 像素坐标与尺寸。按名称找元素，不靠截图和 OCR |
+| `browser_eval` | 在页面里执行 JS 并取回值。读写 DOM、点元素、填表单、返回 Promise 会被 await |
+
+**注意**：`browser_eval` 的顶层 `await` 不可用——`Runtime.evaluate` 执行的是脚本而不是 async 函数。**要等待就返回 promise**，工具会自动等它。
+
+端口与配置目录可通过 `browserDebugPort`（默认 9222）、`browserPath`（默认探测 Edge/Chrome）、`browserUserDataDir`（默认在缓存目录下）调整；`groups.browser: false` 一次关掉这四个。
 
 ## 3. 屏幕提示：让人知道机器正在做什么
 

@@ -1092,15 +1092,96 @@ public static class DshWin
 		return d;
 	}
 
+	/// <summary>
+	/// Turn the wheel, one notch per event, spaced far enough apart to be counted separately.
+	///
+	/// The delta used to go out as a single event of whatever size was asked for, and that
+	/// does not work: measured on a list, one event carrying -2400 moved two rows, and one
+	/// carrying -800 also moved two rows. The size stopped mattering, which is the signature
+	/// of a clamp - applications cap the delta they will honour from one wheel event.
+	///
+	/// Splitting is necessary but not sufficient. Events that arrive within the same frame are
+	/// coalesced by the application into one, which would put the whole delta back into a
+	/// single clamped event. The pause between them is what makes them separate scrolls, and
+	/// it is why this walks the notches instead of handing over an array.
+	/// </summary>
 	public static Dictionary<string, object> MouseScroll(int delta, bool horizontal)
 	{
-		SendInputs(new INPUT[] { MouseInput(horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta)) });
+		const int NOTCH = 120;
+		// A cap on how long one call may spend: 400 notches at 6 ms is about two and a half
+		// seconds, which is already more scrolling than any caller should need at once.
+		const int MAX_NOTCHES = 400;
+		const int SPACING_MS = 6;
+
+		uint flag = horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
+		int remaining = delta;
+		int sent = 0;
+		while (remaining != 0 && sent < MAX_NOTCHES)
+		{
+			int step = Math.Abs(remaining) >= NOTCH ? (remaining > 0 ? NOTCH : -NOTCH) : remaining;
+			SendInputs(new INPUT[] { MouseInput(flag, 0, 0, unchecked((uint)step)) });
+			remaining -= step;
+			sent++;
+			if (remaining != 0) System.Threading.Thread.Sleep(SPACING_MS);
+		}
+
 		POINT p;
 		GetCursorPos(out p);
 		Dictionary<string, object> d = new Dictionary<string, object>();
 		d["delta"] = delta; d["horizontal"] = horizontal;
+		d["notches"] = sent;
+		// True when the cap cut the request short, so the caller knows why it moved less.
+		d["clamped"] = remaining != 0;
 		d["x"] = p.X; d["y"] = p.Y;
 		return d;
+	}
+
+	// How many text lines one wheel notch actually moves, measured on the applications being
+	// scrolled rather than read from the system setting.
+	//
+	// The setting was the obvious source and it is the wrong one. Measured here: a request for
+	// twenty lines, converted at the configured three lines per notch, advanced a list by five
+	// rows. Applications scroll about one line per notch whatever the setting says, because
+	// they handle the wheel themselves instead of deferring to it.
+	//
+	// So this is a measurement, and if `lines` ever stops matching what the page does, it is
+	// the one number to re-measure.
+	const int EFFECTIVE_LINES_PER_NOTCH = 1;
+
+	// The two system constants are a pair and it matters which is which:
+	//
+	//     SPI_GETWHEELSCROLLLINES = 0x0068   reads the setting
+	//     SPI_SETWHEELSCROLLLINES = 0x0069   writes it, taking the new value as uiParam
+	//
+	// This was 0x0069 at first, which is the writing one. Calling it with uiParam 0 to "read"
+	// the setting therefore SET it to zero - "one screen at a time" - and applications that
+	// treat zero lines as no scrolling stopped scrolling at all. A wrong constant here does
+	// not fail, does not throw, and does not return an error: it silently changes a setting
+	// belonging to the person using the machine, and the symptom appears in their mouse
+	// rather than in this program. The read is spelled out with its own name for that reason.
+	const uint SPI_GETWHEELSCROLLLINES = 0x0068;
+
+	[DllImport("user32.dll", SetLastError = true)]
+	static extern bool SystemParametersInfo(uint action, uint param, out uint value, uint flags);
+
+	public static Dictionary<string, object> MouseScrollLines(int lines, bool horizontal)
+	{
+		// A read, and only a read: the action above is the GET, the value comes back through
+		// the out parameter, and nothing here writes to the system.
+		uint configured = 0;
+		bool read = SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, out configured, 0);
+
+		int delta = (int)Math.Round((double)lines / EFFECTIVE_LINES_PER_NOTCH * 120.0);
+		// A request for movement must not round away to nothing.
+		if (delta == 0 && lines != 0) delta = lines > 0 ? 120 : -120;
+
+		Dictionary<string, object> applied = MouseScroll(delta, horizontal);
+		applied["lines"] = lines;
+		applied["linesPerNotch"] = EFFECTIVE_LINES_PER_NOTCH;
+		// What the machine says, which is not what was used, reported so the difference is
+		// visible rather than surprising.
+		applied["systemLinesPerNotch"] = read ? (int)configured : -1;
+		return applied;
 	}
 
 	// ------------------------------------------------------------- keyboard

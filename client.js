@@ -32,7 +32,6 @@ window.__ModuleLoader__.load({
       noSession: '还没有打开任何会话，所以没有可显示的操作记录。',
       failed: '读取失败',
       all: '全部',
-      clearFilter: '清除',
       autoScroll: '自动滚动',
       liveAuto: '自动更新',
       liveOn: '开启自动更新',
@@ -46,17 +45,10 @@ window.__ModuleLoader__.load({
       columnOutcome: '结果',
       columnTook: '耗时',
       milliseconds: '{ms} ms',
-      kindCapture: '截屏',
-      kindScreen: '读屏',
-      kindWindows: '窗口',
-      kindMouse: '鼠标',
-      kindKeyboard: '键盘',
-      kindClipboard: '剪贴板',
-      kindApp: '应用',
+      kindScreen: '屏幕',
+      kindControl: '控制',
+      kindBrowser: '浏览器',
       kindWait: '等待',
-      kindRecord: '录制',
-      kindReplay: '回放',
-      kindSystem: '系统',
       kindQuery: '查询',
       kindOther: '其他',
       outcomeRunning: '进行中',
@@ -76,7 +68,6 @@ window.__ModuleLoader__.load({
       noSession: 'No session is open, so there is nothing to show.',
       failed: 'Could not read the log',
       all: 'All',
-      clearFilter: 'Clear',
       autoScroll: 'Auto-scroll',
       liveAuto: 'Auto-update',
       liveOn: 'Turn on live updates',
@@ -90,17 +81,10 @@ window.__ModuleLoader__.load({
       columnOutcome: 'Outcome',
       columnTook: 'Took',
       milliseconds: '{ms} ms',
-      kindCapture: 'capture',
       kindScreen: 'screen',
-      kindWindows: 'windows',
-      kindMouse: 'mouse',
-      kindKeyboard: 'keyboard',
-      kindClipboard: 'clipboard',
-      kindApp: 'app',
+      kindControl: 'control',
+      kindBrowser: 'browser',
       kindWait: 'wait',
-      kindRecord: 'record',
-      kindReplay: 'replay',
-      kindSystem: 'system',
       kindQuery: 'query',
       kindOther: 'other',
       outcomeRunning: 'running',
@@ -112,22 +96,20 @@ window.__ModuleLoader__.load({
     };
 
     /** Which dictionary key names each operation kind and outcome. */
-    // Declaration order is the filter order, and it groups related operations:
-    // capture/screen, then the three that put something into the machine, then the
-    // two about programs, then the two halves of recording.
+    // Declaration order is the filter order: what it looked at, what it operated, what it did
+    // in the browser, what it waited for, what it looked up. Six categories, and the only way a
+    // seventh appears is `other` catching a kind this build does not know.
     const KIND_KEYS = {
-      capture: 'kindCapture', screen: 'kindScreen',
-      mouse: 'kindMouse', keyboard: 'kindKeyboard', clipboard: 'kindClipboard',
-      windows: 'kindWindows', app: 'kindApp',
-      record: 'kindRecord', replay: 'kindReplay',
-      wait: 'kindWait', system: 'kindSystem',
-      query: 'kindQuery', other: 'kindOther',
+      screen: 'kindScreen', control: 'kindControl', browser: 'kindBrowser',
+      wait: 'kindWait', query: 'kindQuery', other: 'kindOther',
     };
     // One hue per kind, used only as a translucent wash so the badge inherits the
-    // host theme's text colour instead of fighting it.
+    // host theme's text colour instead of fighting it. Six kinds, six hues: the retired ones
+    // were folded into these rather than parked here, because a hue table that knows about
+    // kinds nothing can produce is a table that lies about the taxonomy.
     const KIND_HUE = {
-      capture: 268, screen: 205, windows: 232, mouse: 152, keyboard: 176, clipboard: 40,
-      app: 318, wait: 96, record: 20, replay: 348, system: 275, query: 195, other: 220,
+      screen: 205, control: 152, browser: 190,
+      wait: 96, query: 195, other: 220,
     };
     const OUTCOME_KEYS = {
       running: 'outcomeRunning', ok: 'outcomeOk', refused: 'outcomeRefused', failed: 'outcomeFailed',
@@ -142,6 +124,9 @@ window.__ModuleLoader__.load({
     };
 
     const HAIRLINE = '1px solid rgba(128,128,128,0.28)';
+    // The same hairline, drawn as a shadow so it cannot be confused with a border that some
+    // other stylesheet is setting.
+    const INSET_HAIRLINE = 'inset 0 0 0 1px rgba(128,128,128,0.28)';
 
     // Column widths in pixels, per language and per layout, declared once and read by
     // everything that needs them: the labels row, the table's colgroup, and the
@@ -329,6 +314,26 @@ window.__ModuleLoader__.load({
       return `${hours} h ${minutes - hours * 60} min`;
     }
 
+    /**
+     * Everything an operation row knows, as plain text for a tooltip.
+     *
+     * The row shows a shortened summary because a table cell cannot grow, but the entry has
+     * always held the whole argument list - and for `browser_eval` the argument is the script
+     * the summary was cut from. Reading only the visible text therefore means never seeing the
+     * part that mattered.
+     */
+    function fullTextOf(entry) {
+      const parts = [entry.summary];
+      if (entry.detail !== undefined) parts.push(String(entry.detail));
+      const args = entry.args;
+      if (args !== null && typeof args === 'object' && Object.keys(args).length > 0) {
+        let rendered;
+        try { rendered = JSON.stringify(args, null, 2); } catch { rendered = String(args); }
+        parts.push(rendered);
+      }
+      return parts.join('\n\n');
+    }
+
     function clockOf(iso) {
       const date = new Date(iso);
       if (Number.isNaN(date.getTime())) return '--:--:--';
@@ -392,6 +397,15 @@ window.__ModuleLoader__.load({
           const roomy = layout === 'wide';
           // Follow the tail of the list as it grows, unless the reader turned it off.
           const [autoScroll, setAutoScroll] = useState(true);
+          // Which rows are opened out to show their whole record. A Set rather than one index:
+          // comparing two long calls side by side is a real thing to do, and a single open row
+          // would close the previous one the moment the reader clicked the second.
+          const [expanded, setExpanded] = useState(() => new Set());
+          const toggleExpanded = (index) => setExpanded((previous) => {
+            const next = new Set(previous);
+            if (next.has(index)) next.delete(index); else next.add(index);
+            return next;
+          });
           const listRef = useRef(null);
           // Which element actually scrolls is not this page's decision: it may be the
           // list box, or a panel the host wrapped around it. So every scrollable
@@ -602,13 +616,20 @@ window.__ModuleLoader__.load({
 
           // Ordered by KIND_KEYS, which groups related operations, rather than by the
           // order they happen to appear in the data.
+          //
+          // Unknown kinds fold into one bucket. They are what a Host that has not been
+          // restarted sends after the taxonomy changes - `mouse` and `keyboard`, once they were
+          // merged into `control` - and appending them individually gave two chips that both
+          // read 其他: two different kinds, one label, and no way to tell which was which. One
+          // bucket is the honest rendering of "something this build does not know about", and
+          // it also makes the mismatch obvious rather than silently mislabelled.
+          const bucketOf = (raw) => (KIND_KEYS[raw] === undefined ? 'other' : raw);
           const kinds = useMemo(() => {
-            const seen = new Set(snapshot.entries.map((entry) => entry.kind));
-            const order = Object.keys(KIND_KEYS);
-            return order.filter((key) => seen.has(key)).concat([...seen].filter((key) => !order.includes(key)));
+            const seen = new Set(snapshot.entries.map((entry) => bucketOf(entry.kind)));
+            return Object.keys(KIND_KEYS).filter((key) => seen.has(key));
           }, [snapshot.entries]);
 
-          const rows = kind === null ? snapshot.entries : snapshot.entries.filter((entry) => entry.kind === kind);
+          const rows = kind === null ? snapshot.entries : snapshot.entries.filter((entry) => bucketOf(entry.kind) === kind);
 
           // The row separator lives on the cells, not on the row: the table is laid out
           // with `border-collapse: separate`, where a <tr> border is not painted at all.
@@ -617,15 +638,28 @@ window.__ModuleLoader__.load({
           // One control vocabulary for the whole page: same height, same radius, same
           // hairline. A control that holds state (the selected filter, the live switch)
           // fills in; one that only acts stays outlined.
+          // The hairline is drawn as an inset shadow rather than as a border, and the border is
+          // explicitly none.
+          //
+          // One control on this page kept showing a pure black ring - measured, #000000, where
+          // the hairline is #DBDBDB - while the control beside it, built from the same style
+          // object, showed the hairline. `outline: none` did not remove it, which rules out the
+          // focus ring, and the two buttons cannot differ by a border they do not set
+          // separately. What is left is a border coming from somewhere other than this file.
+          //
+          // `border: 'none'` takes that away from whatever is setting it, and the shadow draws
+          // the line this page actually wants. A shadow cannot be mistaken for an outline, and
+          // a border cannot survive `none`.
           const control = (extra) => ({
             font: 'inherit', fontSize: 12.5, lineHeight: '20px', cursor: 'pointer',
             height: 26, padding: '0 12px', borderRadius: 999, boxSizing: 'border-box',
-            border: HAIRLINE, background: 'transparent', color: 'inherit',
+            border: 'none', boxShadow: INSET_HAIRLINE, background: 'transparent', color: 'inherit',
             display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
             ...extra,
           });
-          const CHIP_ON = { background: 'rgba(128,128,128,0.22)', borderColor: 'rgba(128,128,128,0.55)', fontWeight: 500 };
-          const CONTROL_ON = { background: 'rgba(128,128,128,0.16)', borderColor: 'rgba(128,128,128,0.5)' };
+          // Each state restates the shadow, because `borderColor` would now do nothing.
+          const CHIP_ON = { background: 'rgba(128,128,128,0.22)', boxShadow: 'inset 0 0 0 1px rgba(128,128,128,0.55)', fontWeight: 500 };
+          const CONTROL_ON = { background: 'rgba(128,128,128,0.16)', boxShadow: 'inset 0 0 0 1px rgba(128,128,128,0.5)' };
 
           const countOf = (key) => (key === null ? snapshot.entries.length : snapshot.entries.filter((entry) => entry.kind === key).length);
           // Each filter is its own chip rather than a segment of one track. With this
@@ -653,6 +687,14 @@ window.__ModuleLoader__.load({
           // The switch. Turning it on runs the same command the page already uses, so it
           // costs exactly one recorded row - the row for the click that turned it on -
           // and every update after that arrives over the stream instead.
+          //
+          // Its reply is read for the credentials and nothing else. It used to be taken as a
+          // fresh copy of the list as well, which broke in both directions: turning the bridge
+          // off answers with the list but without a limit, so the page replaced a hundred rows
+          // with the fifty the command returns by default and the header went to "50 / 102";
+          // turning it on answers with the credentials alone, so there were no rows at all and
+          // the list emptied until the stream caught up. What the switch controls is the
+          // bridge, so that is all it is allowed to change.
           const toggleLive = async () => {
             if (sessionId === undefined) return;
             const wanted = live === undefined ? 'on' : 'off';
@@ -662,7 +704,6 @@ window.__ModuleLoader__.load({
               if (result?.kind !== 'success') return;
               const payload = JSON.parse(result.text);
               setLive(payload.live);
-              setSnapshot({ status: 'ready', entries: payload.entries ?? [], total: payload.total ?? 0, error: null });
             } catch {
               /* the switch keeps showing the last known state */
             }
@@ -750,9 +791,22 @@ window.__ModuleLoader__.load({
           // same set, the counter's own ticks - cannot change the answer.
           const operationKey = `${rows.length}|${rows[0]?.index ?? ''}|${rows[rows.length - 1]?.index ?? ''}|${localeId}`;
           const requiredOperation = requiredOperationWidth(containerRef.current, rows.map((entry) => entry.summary), operationKey) ?? OPERATION_ROOM;
+          // The medium layout is allowed to hold on past the point where its operation column
+          // is down to what the text wants. Dropping to narrow buys back fewer fixed columns,
+          // but it also loses the outcome column - the one that says whether a row failed - so
+          // a squeeze of a few dozen pixels is not worth it. This is applied to the
+          // medium-to-narrow boundary only: lowering the wide boundary as well would make the
+          // table give up the date while it still had room for it.
+          const MEDIUM_HOLD = 30;
+          // Wide holds on past the arithmetic, for the same reason medium does: the date column
+          // is worth more than a few dozen pixels of the operation column, and giving up the
+          // date is what dropping to medium costs. Demanded in both directions - leaving wide
+          // later, and returning to it earlier - because it is one question: does the panel have
+          // room for this layout.
+          const WIDE_HOLD = 25;
           thresholds.current = {
-            toWide: fixedWidthOf(widthsByLanguage.wide) + PADDING.wide + requiredOperation,
-            toMedium: fixedWidthOf(widthsByLanguage.medium) + PADDING.medium + requiredOperation,
+            toWide: fixedWidthOf(widthsByLanguage.wide) + PADDING.wide + requiredOperation - WIDE_HOLD,
+            toMedium: fixedWidthOf(widthsByLanguage.medium) + PADDING.medium + requiredOperation - MEDIUM_HOLD,
             band: DEAD_BAND,
           };
           const names = COLUMNS_BY_LAYOUT[layout];
@@ -812,6 +866,10 @@ window.__ModuleLoader__.load({
 
           return h('div', {
             ref: containerRef,
+            // The class exists so the rules in the <style> element above can reach these
+            // buttons. Inline styles cannot express a pseudo-class, and the focus ring is a
+            // pseudo-class state.
+            className: 'dshcc',
             style: {
               ...seat,
               padding: narrow ? '0 10px' : (roomy ? '0 16px' : '0 12px'),
@@ -821,7 +879,36 @@ window.__ModuleLoader__.load({
             // The spinner's keyframes, rendered as an element rather than injected into the
             // document head, so unmounting this view takes them away with everything else
             // the page put on screen.
-            h('style', { key: 'spin', children: '@keyframes dshcc-spin { to { transform: rotate(360deg); } }' }),
+            // Two rules, and both are needed.
+            //
+            // The first is the spinner's keyframes. The second removes the default focus
+            // outline from every button on this page.
+            //
+            // The outline is not the border. Measured on this page: a near-black line sat
+            // seven pixels above the top edge of one button, which is outside its box, and
+            // no other button had one. It is Chromium's focus ring. It looked permanent
+            // rather than transient because the focus is not given by a click - the shell
+            // focuses the first control when the pane mounts, and `:focus-visible` is true
+            // for a focus that arrived that way, so the ring never went away.
+            //
+            // Keeping it for keyboard users would mean keeping it here too, since the two
+            // states are the same flag. These are toggles whose state is already carried by
+            // their fill, so the ring is withdrawn in favour of that. A button whose
+            // selected state is visible does not need a second indicator.
+            h('style', {
+              key: 'spin',
+              children: [
+                '@keyframes dshcc-spin { to { transform: rotate(360deg); } }',
+                // Keyboard focus gets a ring, in the page's own grey. `:focus-visible` is the
+                // browser's own distinction between a focus that arrived by keyboard and one
+                // that arrived from a click, so the ring is there when it is useful and out of
+                // the way otherwise. The platform default is a near-black ring drawn at the
+                // border edge, which on a hairline pill reads as a heavy black outline - not a
+                // border, and not something this page drew.
+                '.dshcc button:focus:not(:focus-visible) { outline: none; }',
+                '.dshcc button:focus-visible { outline: 2px solid rgba(128,128,128,0.55); outline-offset: 2px; }',
+              ].join('\n'),
+            }),
             // The title, the controls and the filters pin to the top. This is the only
             // sticky element on the page, and that is the point: with nothing else pinned,
             // no element has to know how tall another one is, so there is no offset that
@@ -925,14 +1012,6 @@ window.__ModuleLoader__.load({
                   key: 'chips',
                   style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 },
                 }, [filterButton(null, t('all')), ...kinds.map((entry) => filterButton(entry, t(KIND_KEYS[entry] ?? 'kindOther')))]),
-                // Only offered while a filter is on, so it can only mean one thing.
-                kind === null ? null : h('button', {
-                  key: 'clearfilter',
-                  type: 'button',
-                  onClick: () => setKind(null),
-                  title: t('clearFilter'),
-                  style: { font: 'inherit', fontSize: 12.5, cursor: 'pointer', border: 'none', background: 'transparent', color: 'inherit', opacity: 0.65, padding: '0 2px', textDecoration: 'underline' },
-                }, t('clearFilter')),
               ])
               : null,
 
@@ -977,8 +1056,12 @@ window.__ModuleLoader__.load({
                   h('colgroup', { key: 'cols' }, widths.map((w, index) => h('col', {
                     key: names[index], style: w === null || w === undefined ? {} : { width: w },
                   }))),
-                h('tbody', { key: 'b' }, rows.map((entry) => h('tr', { key: entry.index }, [
-                  roomy ? h('td', { key: 'i', style: { ...cell, opacity: 0.6 } }, `#${entry.index}`) : null,
+                // Each row may contribute a second row: the expanded detail. flatMap rather than
+                // map because a table body cannot hold a wrapper element - a <div> between rows
+                // is invalid HTML and the browser will hoist it out of the table - so the extra
+                // content has to be another <tr> in the same flat list.
+                h('tbody', { key: 'b' }, rows.flatMap((entry) => {
+                  const row = h('tr', { key: entry.index }, [                  roomy ? h('td', { key: 'i', style: { ...cell, opacity: 0.6 } }, `#${entry.index}`) : null,
                   // The date is the first thing to go: only the wide layout has room for it,
                   // and below that the clock alone still orders the rows.
                   h('td', { key: 't', style: { ...cell, opacity: 0.8, fontVariantNumeric: 'tabular-nums' } }, roomy ? stampOf(entry.at) : clockOf(entry.at)),
@@ -994,13 +1077,35 @@ window.__ModuleLoader__.load({
                     },
                   }, t(KIND_KEYS[entry.kind] ?? 'kindOther'))),
                   // No minimum width. Every other column is `nowrap` and therefore keeps its
-                  // content width, so this cell is the one the browser has to shrink - and
-                  // because its text wraps, shrinking it costs a line rather than a clipped
-                  // word. It used to hold a 260px floor, which meant that as the panel
-                  // narrowed this column refused to give way and the whole table overflowed
-                  // until the layout gave up and switched. Compressing here first is what
-                  // the narrowing is supposed to do.
-                  h('td', { key: 's', style: { ...cell, whiteSpace: 'normal' } }, [
+                  // content width, so this cell is the one the browser has to shrink.
+                  //
+                  // It used to wrap, on the reasoning that a second line costs less than a
+                  // clipped word. In practice the longest summaries - `截屏 · 窗口 DeepSeek
+                  // Harness` and the browser rows with a selector in them - wrapped to two
+                  // lines while most rows stayed on one, so the column decided its own width
+                  // by whichever row happened to be longest and the table breathed. Now it
+                  // stays on one line and fades out at the tail: a hard clip through a word
+                  // reads as a rendering fault, a fade reads as "there is more".
+                  // Reading the whole of a long summary is not possible in a one-line cell, so the
+                  // cell offers two ways to see the rest: hovering shows the text, clicking opens
+                  // the row out into a selectable block. The tooltip is quick, the expansion is
+                  // copyable - a tooltip cannot be selected, which is no use when the thing being
+                  // read is a script.
+                  h('td', {
+                    key: 's',
+                    title: fullTextOf(entry),
+                    onClick: () => toggleExpanded(entry.index),
+                    style: { ...cell, whiteSpace: 'nowrap', paddingRight: 18, cursor: 'pointer' },
+                  }, h('div', {
+                    key: 'clip',
+                    // The row is a flex line so the text can be told to fill whatever the cell
+                    // has left. That matters for the fade: applied to an inline-block, the
+                    // gradient is measured across the *text's* own width, so the last 26px of
+                    // every summary would fade - including short ones, whose ending is not
+                    // hidden at all. Filling the cell puts the gradient's tail at the cell edge,
+                    // where only text that actually reaches it is affected.
+                    style: { display: 'flex', alignItems: 'center', minWidth: 0 },
+                  }, [
                     // A running operation carries a spinner in front of its title, so the row
                     // says "this is happening right now" without the reader having to reach
                     // the outcome column. It takes currentColor and is therefore amber along
@@ -1019,23 +1124,38 @@ window.__ModuleLoader__.load({
                       // along with the rest of the running row.
                       strokeDasharray: '38 19', strokeLinecap: 'round',
                     })) : null,
-                    h('span', { key: 'text' }, entry.summary),
-                  ]),
+                    // Filling the cell is what makes the fade mean "too long" rather than
+                    // "the end of the text": flex:1 stretches the span to the cell's remaining
+                    // width, so a short summary stops well before the gradient starts, and only
+                    // text that runs into it is affected.
+                    h('span', {
+                      key: 'text',
+                      style: {
+                        flex: 1, minWidth: 0, overflow: 'hidden',
+                        whiteSpace: 'nowrap',
+                        maskImage: 'linear-gradient(to right, #000 calc(100% - 26px), transparent)',
+                        WebkitMaskImage: 'linear-gradient(to right, #000 calc(100% - 26px), transparent)',
+                      },
+                    }, entry.summary),
+                  ])),
                   narrow ? null : h('td', {
                     key: 'o',
+                    // The reason a call failed travels in `title`, not in the cell. `失败 -
+                    // delta is required` was the whole failure rendered into a column sized
+                    // for the word 失败: it wrapped, it pushed the column wider than the
+                    // status needs, and the one word a reader scans for was buried in the
+                    // middle of it. The column says what happened; hovering says why.
+                    title: entry.detail === undefined ? undefined : String(entry.detail),
                     style: {
                       ...cell, ...toneStyle(OUTCOME_TONE[entry.outcome]),
                       // The same narrower gutter the label above uses, so the values and the
                       // label they sit under start and end on the same pixels.
                       paddingRight: OUTCOME_GUTTER,
-                      // A refusal carries its whole reason, which can be a sentence. Without
-                      // wrapping, that one row decides the width of the column and pushes the
-                      // whole table past the panel - which is what made the layout give up
-                      // and switch while the table still had room to give.
+                      // A long reason is still possible in `title` on a row whose status is
+                      // short, so the cell keeps wrapping rather than widening the table.
                       whiteSpace: 'normal', maxWidth: 170,
                     },
-                  },
-                    `${t(OUTCOME_KEYS[entry.outcome] ?? entry.outcome)}${entry.outcome === 'ok' || entry.detail === undefined ? '' : ` - ${entry.detail}`}`),
+                  }, t(OUTCOME_KEYS[entry.outcome] ?? entry.outcome)),
                   h('td', {
                     key: 'e',
                     style: {
@@ -1058,7 +1178,26 @@ window.__ModuleLoader__.load({
                     // One unit for both layouts now that the unit is `ms`: the Chinese word
                     // it replaced cost about 12px in a column that holds nothing else.
                     : durationOf(entry.elapsedMs)),
-                ].filter((node) => node !== null)))),
+                  ].filter((node) => node !== null));
+                  if (!expanded.has(entry.index)) return [row];
+                  // The collapsed row cannot grow, so the whole record goes underneath it:
+                  // summary, reason and the arguments the call was made with. This is real text
+                  // in the document, so it can be selected and copied - which a native tooltip
+                  // cannot be, and which is the reason this exists alongside the title.
+                  const detail = h('tr', { key: `${entry.index}-detail` }, h('td', {
+                    colSpan: columns.length,
+                    style: { padding: '0 0 10px 0', borderBottom: HAIRLINE },
+                  }, h('pre', {
+                    style: {
+                      margin: 0, padding: '10px 12px', borderRadius: 8,
+                      background: 'rgba(128,128,128,0.10)',
+                      fontSize: 12.5, lineHeight: 1.55,
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      userSelect: 'text', cursor: 'text',
+                    },
+                  }, fullTextOf(entry))));
+                  return [row, detail];
+                })),
                 ])
                 : null,
             ]),

@@ -291,6 +291,12 @@ function Invoke-Op([string]$op, $a) {
 		'mouse.scroll' {
 			$horizontal = $false
 			if ((Get-Arg $a 'horizontal' $false) -eq $true) { $horizontal = $true }
+			# `lines` is the honest unit: one wheel notch is 120, and how far that travels is a
+			# system setting the caller cannot know. The count of notches is worked out here,
+			# against the setting the machine actually has.
+			if ($null -ne (Get-Arg $a 'lines' $null)) {
+				return [DshWin]::MouseScrollLines((Get-IntArg $a 'lines' 0), $horizontal)
+			}
 			return [DshWin]::MouseScroll((Get-IntArg $a 'delta' 0), $horizontal)
 		}
 		'key.type' { return [DshWin]::KeyType((Get-StrArg $a 'text' ''), (Get-IntArg $a 'delayMs' 0)) }

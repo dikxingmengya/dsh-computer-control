@@ -1,4 +1,4 @@
-// DeepSeek Harness plugin: drive the local Windows desktop.
+﻿// DeepSeek Harness plugin: drive the local Windows desktop.
 //
 // Registers tools for screen inspection and capture, template and colour
 // search, OCR, mouse and keyboard injection, window and application control,
@@ -14,6 +14,7 @@ import { normalizeConfig } from './lib/config.js';
 import { Indicator } from './lib/indicator.js';
 import { LiveBridge } from './lib/live-bridge.js';
 import { activityTools } from './lib/tools/activity.js';
+import { browserTools } from './lib/tools/browser.js';
 import { inputTools } from './lib/tools/input.js';
 import { miscTools } from './lib/tools/misc.js';
 import { screenTools } from './lib/tools/screen.js';
@@ -41,6 +42,18 @@ const GROUP_OF = {
   ocr_screen: 'ocr',
   input_record: 'record',
   system_control: 'system',
+  // The browser tools are their own group, so a profile that does not want a debugging
+  // endpoint opened can switch all four off with one setting instead of four.
+  browser_launch: 'browser',
+  browser_tabs: 'browser',
+  browser_read: 'browser',
+  browser_eval: 'browser',
+  browser_screenshot: 'browser',
+  browser_command: 'browser',
+  browser_click: 'browser',
+  browser_fill: 'browser',
+  browser_wait: 'browser',
+  browser_downloads: 'browser',
 };
 
 /**
@@ -126,6 +139,7 @@ export function apply(ctx, rawConfig) {
     ...screenTools(runtime),
     ...inputTools(runtime),
     ...windowTools(runtime),
+    ...browserTools(runtime),
     ...miscTools(runtime),
     ...activityTools(runtime),
   ];
