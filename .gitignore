@@ -1,0 +1,8 @@
+# Build products of the native helper: the compiled P/Invoke assembly, cached by
+# content hash. Anyone who installs this compiles their own on first use.
+native/.cache/
+
+# Local runs of the plugin write their captures here.
+artifacts/
+*.log
+node_modules/

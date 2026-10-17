@@ -1,0 +1,63 @@
+# dsh-computer-control bundle patch.
+#
+# Applied after the shipped bundles, so this row is addressed by id
+# `computer-control` from the profile's own cordis.patch.yml when tuning it.
+#
+# Every option below is validated by the plugin at activation; a bad value
+# fails the row with a message naming the field.
+- insert:
+    - id: computer-control
+      name: '@local/dsh-computer-control'
+      config:
+        # Report what a mutating action would do without injecting any input.
+        dryRun: false
+        # Permit destructive actions: closing windows, killing processes,
+        # locking the session, blanking the display, sleeping the machine.
+        allowRisky: false
+        # auto: attach a capture when the active model declares image input.
+        # always: refuse to capture without attaching. never: never attach.
+        attachImages: auto
+        # Longest edge of an attached capture; 0 keeps native resolution.
+        maxImageDim: 1568
+        jpegQuality: 85
+        # Captures and recordings land here. Empty means
+        # $DSH_HOME/cache/computer-control (or the OS temp directory).
+        artifactDir: ''
+        typingDelayMs: 0
+        helperTimeoutMs: 20000
+        captureTimeoutMs: 60000
+        # Set a group to false to keep its tools out of the model's context.
+        groups:
+          core: true
+          find: true
+          ocr: true
+          record: true
+          system: true
+        disabledTools: []
+        # Add the coordinate-convention paragraph to the system prompt.
+        promptSection: true
+        # Claim the Host's exclusive `computerUse` provider slot. Leave false
+        # unless you are sure no shipped provider needs it.
+        registerComputerUseSeam: false
+        # Outline the rectangle a capture is about to take, so the person at the
+        # machine knows what is being looked at: shown before the shutter, then
+        # again afterwards, which is the half that can be read at leisure because
+        # it costs no time. Set false to capture silently.
+        captureIndicator: true
+        captureIndicatorLeadMs: 700      # how long it is visible before the shutter
+        captureIndicatorLingerMs: 1600   # how long it comes back for afterwards
+        captureIndicatorSettleMs: 90     # pause after hiding it, before the shutter
+        # Floating badge naming the operation in progress - every one of them,
+        # captures and screen reads included, so a person at the machine always
+        # knows what is happening. The first badge of a burst also carries the
+        # hands-off request; later refreshes stay short.
+        inputIndicator: true
+        inputIndicatorHoldMs: 3500       # how long it stays after the last operation
+        # Language of the indicator text. auto follows the system locale.
+        indicatorLanguage: auto          # auto | zh | en
+        # Palette of both indicators. auto follows the DSH theme, whose own
+        # `system` choice follows the Windows app theme.
+        indicatorTheme: auto             # auto | light | dark
+        # The operation list behind the computer_activity tool.
+        activityLogLimit: 300            # operations kept per session
+        activityLogToFile: true          # mirror to operations.jsonl so a restart keeps it

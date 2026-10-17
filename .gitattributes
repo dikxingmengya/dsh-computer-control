@@ -1,0 +1,18 @@
+# Line endings are stated rather than inherited from whoever clones this.
+#
+# The plugin only runs on Windows, where either ending works - PowerShell 5.1 parses
+# LF files and the C# compiler does not care - but "either works" is the assumption
+# that produces a diff of every file the moment somebody with a different
+# core.autocrlf touches the repository. Saying it here makes a checkout byte-identical
+# for everyone.
+* text=auto eol=lf
+
+# Windows-native sources, kept in the ending their tooling has always seen.
+*.ps1 text eol=crlf
+*.cs text eol=crlf
+*.cmd text eol=crlf
+
+# Images and the compiled helper cache are bytes, not lines.
+*.png binary
+*.jpg binary
+*.svg binary
