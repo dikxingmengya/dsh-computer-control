@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-computer-control",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Drive the local Windows desktop from DeepSeek Harness: screen capture, template and colour search, OCR, mouse, keyboard, window, clipboard, application, recording, system control, and a browsable log of what the session has done.",
   "type": "module",
   "main": "index.js",
