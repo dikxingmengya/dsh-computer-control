@@ -1,4 +1,4 @@
-﻿// DeepSeek Harness plugin: drive the local Windows desktop.
+// DeepSeek Harness plugin: drive the local Windows desktop.
 //
 // Registers tools for screen inspection and capture, template and colour
 // search, OCR, mouse and keyboard injection, window and application control,
@@ -9,7 +9,7 @@
 import { ActivityLog } from './lib/activity.js';
 import { Artifacts } from './lib/artifacts.js';
 import { NativeBridge } from './lib/bridge.js';
-import { activityCommandDefinition } from './lib/command.js';
+import { activityCommandDefinition, stopCommandDefinition } from './lib/command.js';
 import { normalizeConfig } from './lib/config.js';
 import { Indicator } from './lib/indicator.js';
 import { LiveBridge } from './lib/live-bridge.js';
@@ -181,6 +181,9 @@ export function apply(ctx, rawConfig) {
   const commands = ctx.get('commands');
   if (commands?.register) {
     ctx.effect(() => commands.register(activityCommandDefinition(runtime)));
+    // A separate command, because its whole purpose is to be reachable while a tool call is
+    // stuck: asking the model to call something to unblock itself is not a way out.
+    ctx.effect(() => commands.register(stopCommandDefinition(runtime)));
   } else {
     ctx.logger?.debug?.('computer-control: no command registry; /computer-activity is unavailable to the UI');
   }

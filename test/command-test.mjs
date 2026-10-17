@@ -14,19 +14,28 @@ const check = (name, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `\n        ${String(detail).slice(0, 600)}` : ''}`);
 };
 
+// Collected by name, not overwritten. The single-variable version kept only the last
+// registration, so adding /computer-stop silently made this suite test the wrong command -
+// and it said "the Host does not register /computer-activity" about a Host that did.
+const commands = new Map();
 let command;
 const tools = new Map();
+const registry = { register: (definition) => { commands.set(definition.name, definition); return () => {}; } };
 plugin.apply({
   logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
   tools: { register: (d) => { tools.set(d.name, d); return () => {}; } },
-  commands: { register: (definition) => { command = definition; return () => {}; } },
+  commands: registry,
   effect: (f) => { f(); return () => {}; },
   inject: () => {},
-  get: (key) => (key === 'commands' ? { register: (definition) => { command = definition; return () => {}; } } : undefined),
+  get: (key) => (key === 'commands' ? registry : undefined),
   systemPrompt: { getSectionOrder: () => 3000, section: () => () => {} },
 }, { artifactDir: path.join(os.tmpdir(), 'dsh-cc-command-artifacts'), indicatorLanguage: 'zh', indicatorTheme: 'light', indicatorClaimScreen: false, activityLogToFile: false, dryRun: false });
+command = commands.get('computer-activity');
 
 check('the Host registers /computer-activity', command?.name === 'computer-activity', JSON.stringify({ name: command?.name, id: command?.definitionId, description: command?.description }));
+check('the Host registers /computer-stop, the way out of a stuck wait',
+  commands.get('computer-stop')?.name === 'computer-stop',
+  JSON.stringify([...commands.keys()]));
 
 const exec = { callId: 't', rootCallId: 't', name: 't', arguments: {}, agent: { id: 'command-test' }, signal: new AbortController().signal, deferContext: () => {}, concludeTurn: () => {} };
 const call = (name, args) => tools.get(name).execute(args, { ...exec, name, arguments: args });
